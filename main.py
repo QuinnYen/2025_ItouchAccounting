@@ -83,7 +83,7 @@ class ItouchCrawler:
         self.DEVELOPER_MODE = False 
         
         self.root = root
-        self.root.title('iTouch-會計帳目自動抓取程式 v2')
+        self.root.title('iTouch-會計帳目自動抓取程式 v3')
         
         # 顯示載入提示
         self.loading_label = ttk.Label(root, text="正在初始化...", font=('Helvetica', 12))
