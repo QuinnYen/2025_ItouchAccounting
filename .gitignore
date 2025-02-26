@@ -1,0 +1,46 @@
+# 虛擬環境
+venv/
+env/
+.env/
+.venv/
+ENV/
+
+# 編譯和建置檔案
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 您專案的特定資料夾
+logs/
+exports/
+
+# IDE 相關檔案
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+.project
+.pydevproject
+.settings/
+
+# Chrome WebDriver 相關
+chromedriver.exe
+chromedriver
