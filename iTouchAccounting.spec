@@ -6,7 +6,8 @@ for folder in ['logs', 'exports']:
         os.makedirs(folder)
 
 datas = [
-    ('plan_codes.txt', '.'), 
+    ('plan_codes.txt', '.'),
+    ('drivers/chromedriver.exe', 'drivers'),
     ('C:/Users/Administrator/anaconda3/Library/lib/tcl8.6', 'tcl8.6'),
     ('C:/Users/Administrator/anaconda3/Library/lib/tk8.6', 'tk8.6'),
     ('dependencies/icon.ico', '.')
@@ -44,7 +45,9 @@ hiddenimports = [
     'xlsxwriter',
     'xml.parsers.expat',
     'pkg_resources.py2_warn',
-    'pkg_resources'
+    'pkg_resources',
+    'chrome_manager',
+    'winreg;platform_system=="Windows"',
 ]
 
 # 收集相關套件

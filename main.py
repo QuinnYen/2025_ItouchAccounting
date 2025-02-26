@@ -14,7 +14,7 @@ from excel_exporter import ExcelExporter
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from webdriver_manager.chrome import ChromeDriverManager
+from chrome_manager import ChromeDriverManager
 
 class ErrorLogger:
     def __init__(self, log_dir='logs'):
@@ -165,10 +165,22 @@ class ItouchCrawler:
         self.error_logger.log_error(f"初始化失敗: {self.initialization_error}")
 
     def initialize_driver(self):
-        """優化的瀏覽器初始化"""
+        """使用自定義 ChromeDriver 管理器初始化瀏覽器"""
         if not self.driver:
             try:
-                service = Service(ChromeDriverManager().install())
+                # 使用自定義管理器獲取驅動程式路徑
+                driver_manager = ChromeDriverManager()
+                driver_path = driver_manager.install()
+                
+                # 添加更多兼容性選項
+                self.options.add_argument('--disable-dev-shm-usage')
+                self.options.add_argument('--no-sandbox')
+                self.options.add_argument('--disable-web-security')
+                self.options.add_argument('--allow-running-insecure-content')
+                self.options.add_argument('--ignore-certificate-errors')
+                
+                # 使用獲取的驅動程式路徑
+                service = Service(driver_path)
                 self.driver = webdriver.Chrome(service=service, options=self.options)
                 
                 # 當在無頭模式時才禁用登入按鈕
@@ -177,7 +189,7 @@ class ItouchCrawler:
                     
             except Exception as e:
                 self.error_logger.log_error("瀏覽器初始化失敗", e)
-                self.update_status("瀏覽器初始化失敗", True)
+                self.update_status("瀏覽器初始化失敗，請參考錯誤日誌", True)
 
     def login_and_query(self):
         """優化的登入查詢流程"""
@@ -521,7 +533,7 @@ class ItouchCrawler:
             base_path = os.path.dirname(sys.executable)
         else:
             # 如果是一般 Python 腳本，使用腳本所在目錄
-            base_path = os.path.dirname(__file__)
+            base_path = os.path.dirname(os.path.abspath(__file__))
             
         plans_path = os.path.join(base_path, 'plan_codes.txt')
         
@@ -859,7 +871,7 @@ class ItouchCrawler:
                     # 如果是一般 Python 腳本
                     application_path = os.path.dirname(os.path.abspath(__file__))
                     
-                output_folder = 'exports'  # 只傳遞資料夾名稱，讓 ExcelExporter 處理完整路徑
+                output_folder = 'Exports' # 輸出資料夾名稱
                 try:
                     output_file = self.excel_exporter.export_excel(output_folder)
                     if output_file:
