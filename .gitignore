@@ -30,6 +30,7 @@ wheels/
 # 您專案的特定資料夾
 logs/
 exports/
+Document/
 
 # IDE 相關檔案
 .idea/

@@ -80,10 +80,10 @@ class ErrorLogger:
 class ItouchCrawler:
     def __init__(self, root):
         # 加入開發人員控制變數(開發人員模式：True=顯示瀏覽器，False=無頭模式)
-        self.DEVELOPER_MODE = True 
+        self.DEVELOPER_MODE = False 
         
         self.root = root
-        self.root.title('iTouch-會計帳目自動抓取程式 v1')
+        self.root.title('iTouch-會計帳目自動抓取程式 v2')
         
         # 顯示載入提示
         self.loading_label = ttk.Label(root, text="正在初始化...", font=('Helvetica', 12))
@@ -427,7 +427,9 @@ class ItouchCrawler:
                 self.save_credentials()
                 
                 # 登入成功時重置重試計數
-                self.retry_count = 0
+                if hasattr(self, 'retry_count'):
+                    self.retry_count = 0
+                    
                 return True
                 
             except TimeoutException:
@@ -582,33 +584,93 @@ class ItouchCrawler:
             return False
             
         try:
-            self.retry_count = getattr(self, 'retry_count', 0)
-            if self.retry_count > 2:  # 最多重試2次
-                self.update_status("導航重試次數過多，請手動重啟程式", True)
-                return False
+            # 確保重試計數器已初始化
+            if not hasattr(self, 'retry_count'):
+                self.retry_count = 0
                 
+            # 檢查重試次數是否超過限制
+            if self.retry_count >= 2:  # 最多重試2次
+                self.update_status("導航重試次數已達上限，請手動重新啟動程式", True)
+                # 重置重試計數
+                self.retry_count = 0
+                # 清理瀏覽器資源
+                if self.driver:
+                    self.driver.quit()
+                    self.driver = None
+                # 重置登入狀態
+                self.is_logged_in = False
+                # 恢復介面狀態
+                self.running_label.grid_remove()
+                self.login_button.grid()
+                self.restart_button.grid_remove()
+                self.username.config(state='normal')
+                self.password.config(state='normal')
+                self.remember_checkbox.config(state='normal')
+                return False
+
             # 點擊網站地圖按鈕並等待選單出現
-            WebDriverWait(self.driver, 10).until(
-                EC.element_to_be_clickable((By.CLASS_NAME, "info"))
-            ).click()
-            self.update_status("點擊網站地圖")
+            wait = WebDriverWait(self.driver, 10)
             
-            # 等待會計室選項出現並點擊
-            accounting_xpath = "//li[contains(@class, 'menuLevel1Folder') and contains(., '會計室')]"
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, accounting_xpath))
-            )
-            # 重新獲取元素以避免 stale element
-            self.driver.find_element(By.XPATH, accounting_xpath).click()
+            # 嘗試多種可能的網站地圖按鈕選擇器
+            map_button = None
+            try:
+                map_button = wait.until(
+                    EC.element_to_be_clickable((By.CLASS_NAME, "info"))
+                )
+            except:
+                try:
+                    map_button = wait.until(
+                        EC.element_to_be_clickable((By.XPATH, "//button[contains(., '網站地圖')]"))
+                    )
+                except:
+                    try:
+                        map_button = wait.until(
+                            EC.element_to_be_clickable((By.XPATH, "//a[contains(., '網站地圖')]"))
+                        )
+                    except Exception as e:
+                        self.error_logger.log_error("找不到網站地圖按鈕", e)
+                        raise
+            
+            if map_button:
+                map_button.click()
+                self.update_status("點擊網站地圖")
+            
+            # 嘗試多種可能的會計室選擇器
+            accounting_selectors = [
+                "//li[contains(@class, 'menuLevel1Folder') and contains(., '會計室')]",
+                "//div[contains(@class, 'menuItem')]//a[contains(text(), '會計室')]",
+                "//span[contains(text(), '會計室')]",
+                "//a[contains(text(), '會計室')]"
+            ]
+            
+            accounting_element = None
+            for selector in accounting_selectors:
+                try:
+                    accounting_element = wait.until(
+                        EC.presence_of_element_located((By.XPATH, selector))
+                    )
+                    if accounting_element:
+                        break
+                except:
+                    continue
+                    
+            if not accounting_element:
+                raise Exception("無法找到會計室選單")
+                
+            # 嘗試點擊會計室
+            try:
+                accounting_element.click()
+            except:
+                # 如果直接點擊失敗，嘗試使用JavaScript點擊
+                self.driver.execute_script("arguments[0].click();", accounting_element)
+            
             self.update_status("點擊會計室")
             
-            # 等待經費請款系統選單出現
+            # 其餘導航邏輯保持不變
             payment_xpath = "//li[contains(@class, 'menuLevel2Folder') and contains(., '經費請款系統')]"
             WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.XPATH, payment_xpath))
-            )
-            # 重新獲取元素
-            self.driver.find_element(By.XPATH, payment_xpath).click()
+            ).click()
             self.update_status("點擊經費請款系統")
             
             # 等待請款查詢系統選項出現
@@ -643,8 +705,7 @@ class ItouchCrawler:
             
         except Exception as e:
             self.error_logger.log_error("導航過程發生錯誤", e)
-            self.update_status("導航失敗", True)
-            self.update_status("正在嘗試重新登入...", True)
+            self.update_status("導航失敗，嘗試重新登入...", True)
             
             # 關閉瀏覽器
             if self.driver:
@@ -655,11 +716,23 @@ class ItouchCrawler:
             self.is_logged_in = False
             
             # 增加重試計數
-            self.retry_count = getattr(self, 'retry_count', 0) + 1
+            self.retry_count += 1
             
             # 重新登入並導航
-            if self.login():
-                return self.navigate_to_query()
+            if self.retry_count < 2:  # 只有在未達到最大重試次數時才重試
+                if self.login():
+                    return self.navigate_to_query()
+            else:
+                self.update_status("重試次數已達上限，請手動重新啟動程式", True)
+                # 重置重試計數
+                self.retry_count = 0
+                # 恢復介面狀態
+                self.running_label.grid_remove()
+                self.login_button.grid()
+                self.restart_button.grid_remove()
+                self.username.config(state='normal')
+                self.password.config(state='normal')
+                self.remember_checkbox.config(state='normal')
             return False
 
     def load_year_options(self):
