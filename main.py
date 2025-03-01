@@ -14,6 +14,7 @@ from excel_exporter import ExcelExporter
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from selenium.webdriver.common.action_chains import ActionChains
 from chrome_manager import ChromeDriverManager
 
 class ErrorLogger:
@@ -179,13 +180,48 @@ class ItouchCrawler:
                 self.options.add_argument('--allow-running-insecure-content')
                 self.options.add_argument('--ignore-certificate-errors')
                 
-                # 使用獲取的驅動程式路徑
-                service = Service(driver_path)
-                self.driver = webdriver.Chrome(service=service, options=self.options)
+                # 避免被檢測為自動化軟體
+                self.options.add_argument('--disable-blink-features=AutomationControlled')
+                self.options.add_experimental_option('excludeSwitches', ['enable-automation'])
+                self.options.add_experimental_option('useAutomationExtension', False)
                 
-                # 當在無頭模式時才禁用登入按鈕
-                if not self.DEVELOPER_MODE:
-                    self.login_button.config(state=tk.DISABLED)
+                # 設定 chromedriver 執行環境
+                service = Service(driver_path)
+                
+                # 重試機制
+                max_retries = 3
+                retry_count = 0
+                
+                while retry_count < max_retries:
+                    try:
+                        self.driver = webdriver.Chrome(service=service, options=self.options)
+                        
+                        # 隱藏自動化控制特徵
+                        self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                            'source': '''
+                                Object.defineProperty(navigator, 'webdriver', {
+                                    get: () => undefined
+                                });
+                            '''
+                        })
+                        
+                        # 設定頁面加載超時
+                        self.driver.set_page_load_timeout(30)
+                        
+                        # 當在無頭模式時才禁用登入按鈕
+                        if not self.DEVELOPER_MODE:
+                            self.login_button.config(state=tk.DISABLED)
+                            
+                        # 成功初始化，跳出迴圈
+                        break
+                        
+                    except Exception as e:
+                        retry_count += 1
+                        if retry_count >= max_retries:
+                            raise e
+                        else:
+                            self.update_status(f"初始化瀏覽器失敗，正在重試 ({retry_count}/{max_retries})...")
+                            time.sleep(2)  # 等待2秒後重試
                     
             except Exception as e:
                 self.error_logger.log_error("瀏覽器初始化失敗", e)
@@ -620,32 +656,48 @@ class ItouchCrawler:
                 self.remember_checkbox.config(state='normal')
                 return False
 
-            # 點擊網站地圖按鈕並等待選單出現
+            # 確保頁面載入完成
             wait = WebDriverWait(self.driver, 10)
             
+            # ====== 處理網站地圖按鈕 ======
             # 嘗試多種可能的網站地圖按鈕選擇器
+            map_selectors = [
+                (By.CLASS_NAME, "info"),
+                (By.XPATH, "//button[contains(., '網站地圖')]"),
+                (By.XPATH, "//a[contains(., '網站地圖')]"),
+                (By.CSS_SELECTOR, ".info")
+            ]
+            
+            # 依序嘗試不同的選擇器
             map_button = None
+            for selector in map_selectors:
+                try:
+                    map_button = wait.until(EC.element_to_be_clickable(selector))
+                    if map_button:
+                        break
+                except:
+                    continue
+                    
+            if not map_button:
+                raise Exception("找不到網站地圖按鈕")
+                
+            # 安全點擊地圖按鈕
             try:
-                map_button = wait.until(
-                    EC.element_to_be_clickable((By.CLASS_NAME, "info"))
-                )
+                map_button.click()
             except:
                 try:
-                    map_button = wait.until(
-                        EC.element_to_be_clickable((By.XPATH, "//button[contains(., '網站地圖')]"))
-                    )
+                    # 嘗試使用JavaScript點擊
+                    self.driver.execute_script("arguments[0].click();", map_button)
                 except:
-                    try:
-                        map_button = wait.until(
-                            EC.element_to_be_clickable((By.XPATH, "//a[contains(., '網站地圖')]"))
-                        )
-                    except Exception as e:
-                        self.error_logger.log_error("找不到網站地圖按鈕", e)
-                        raise
+                    # 如果仍然失敗，嘗試第三種方法
+                    action = webdriver.ActionChains(self.driver)
+                    action.move_to_element(map_button).click().perform()
             
-            if map_button:
-                map_button.click()
-                self.update_status("點擊網站地圖")
+            self.update_status("點擊網站地圖")
+            
+            # ====== 等待選單出現並點擊會計室 ======
+            # 給予足夠時間讓選單出現
+            time.sleep(1)
             
             # 嘗試多種可能的會計室選擇器
             accounting_selectors = [
@@ -655,57 +707,128 @@ class ItouchCrawler:
                 "//a[contains(text(), '會計室')]"
             ]
             
-            accounting_element = None
+            # 重新尋找每次尋找元素，避免stale element
             for selector in accounting_selectors:
                 try:
+                    # 等待元素可見
                     accounting_element = wait.until(
-                        EC.presence_of_element_located((By.XPATH, selector))
+                        EC.visibility_of_element_located((By.XPATH, selector))
                     )
-                    if accounting_element:
+                    # 嘗試點擊
+                    try:
+                        accounting_element.click()
+                        self.update_status("點擊會計室")
                         break
+                    except:
+                        try:
+                            # JavaScript點擊
+                            self.driver.execute_script("arguments[0].click();", accounting_element)
+                            self.update_status("點擊會計室 (JS)")
+                            break
+                        except Exception as e:
+                            self.error_logger.log_error(f"點擊會計室失敗 (使用選擇器 {selector}): {str(e)}")
+                            continue
                 except:
                     continue
-                    
-            if not accounting_element:
-                raise Exception("無法找到會計室選單")
+            else:
+                # 如果所有選擇器都失敗，報告錯誤
+                raise Exception("無法找到或點擊會計室選單")
                 
-            # 嘗試點擊會計室
-            try:
-                accounting_element.click()
-            except:
-                # 如果直接點擊失敗，嘗試使用JavaScript點擊
-                self.driver.execute_script("arguments[0].click();", accounting_element)
+            # ====== 等待經費請款系統選單出現 ======
+            # 給予足夠時間讓下拉選單顯示
+            time.sleep(1)
             
-            self.update_status("點擊會計室")
+            payment_selectors = [
+                "//li[contains(@class, 'menuLevel2Folder') and contains(., '經費請款系統')]",
+                "//li[contains(text(), '經費請款系統')]",
+                "//a[contains(text(), '經費請款系統')]"
+            ]
             
-            # 其餘導航邏輯保持不變
-            payment_xpath = "//li[contains(@class, 'menuLevel2Folder') and contains(., '經費請款系統')]"
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, payment_xpath))
-            ).click()
-            self.update_status("點擊經費請款系統")
+            # 嘗試多個選擇器
+            for selector in payment_selectors:
+                try:
+                    payment_element = wait.until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    try:
+                        payment_element.click()
+                        self.update_status("點擊經費請款系統")
+                        break
+                    except:
+                        try:
+                            self.driver.execute_script("arguments[0].click();", payment_element)
+                            self.update_status("點擊經費請款系統 (JS)")
+                            break
+                        except:
+                            continue
+                except:
+                    continue
+            else:
+                raise Exception("無法找到或點擊經費請款系統選單")
             
-            # 等待請款查詢系統選項出現
-            query_xpath = "//a[contains(., '請款.授權.查詢系統')]"
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, query_xpath))
-            )
-            # 重新獲取元素
-            self.driver.find_element(By.XPATH, query_xpath).click()
-            self.update_status("點擊請款.授權.查詢系統")
+            # ====== 等待請款查詢系統選項出現 ======
+            # 給予足夠時間讓選單顯示
+            time.sleep(1)
+            
+            query_selectors = [
+                "//a[contains(., '請款.授權.查詢系統')]",
+                "//a[contains(text(), '請款') and contains(text(), '授權') and contains(text(), '查詢')]",
+                "//a[contains(text(), '請款.授權.查詢')]"
+            ]
+            
+            # 嘗試多個選擇器
+            for selector in query_selectors:
+                try:
+                    query_element = wait.until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    try:
+                        query_element.click()
+                        self.update_status("點擊請款.授權.查詢系統")
+                        break
+                    except:
+                        try:
+                            self.driver.execute_script("arguments[0].click();", query_element)
+                            self.update_status("點擊請款.授權.查詢系統 (JS)")
+                            break
+                        except:
+                            continue
+                except:
+                    continue
+            else:
+                raise Exception("無法找到或點擊請款.授權.查詢系統選單")
             
             # 處理新分頁
             WebDriverWait(self.driver, 10).until(lambda d: len(d.window_handles) > 1)
             self.driver.switch_to.window(self.driver.window_handles[-1])
             
-            # 點擊會計經費查詢
-            finance_xpath = "//a[contains(., '會計經費查詢')]"
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, finance_xpath))
-            )
-            # 重新獲取元素
-            self.driver.find_element(By.XPATH, finance_xpath).click()
-            self.update_status("點擊會計經費查詢")
+            # ====== 點擊會計經費查詢 ======
+            finance_selectors = [
+                "//a[contains(., '會計經費查詢')]",
+                "//a[text()='會計經費查詢']"
+            ]
+            
+            # 嘗試多個選擇器
+            for selector in finance_selectors:
+                try:
+                    finance_element = wait.until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    try:
+                        finance_element.click()
+                        self.update_status("點擊會計經費查詢")
+                        break
+                    except:
+                        try:
+                            self.driver.execute_script("arguments[0].click();", finance_element)
+                            self.update_status("點擊會計經費查詢 (JS)")
+                            break
+                        except:
+                            continue
+                except:
+                    continue
+            else:
+                raise Exception("無法找到或點擊會計經費查詢")
             
             # 處理最後的分頁切換
             WebDriverWait(self.driver, 10).until(lambda d: len(d.window_handles) > 2)
@@ -906,18 +1029,149 @@ class ItouchCrawler:
             self.open_export_button.config(state=tk.NORMAL)
             return False
 
+    def safe_click(self, locator, wait_time=10, retries=3):
+        """
+        安全地點擊元素，處理可能的 StaleElementReferenceException
+        
+        Args:
+            locator: 元素定位器，格式為 (定位方法, 定位值) 如 (By.ID, "myId")
+            wait_time: 等待元素出現的秒數
+            retries: 重試次數
+        
+        Returns:
+            bool: 操作是否成功
+        """
+        for attempt in range(retries):
+            try:
+                # 每次重新找元素，避免 stale element
+                element = WebDriverWait(self.driver, wait_time).until(
+                    EC.element_to_be_clickable(locator)
+                )
+                
+                # 嘗試三種點擊方法
+                try:
+                    # 1. 常規點擊
+                    element.click()
+                    return True
+                except:
+                    try:
+                        # 2. JavaScript 點擊
+                        self.driver.execute_script("arguments[0].click();", element)
+                        return True
+                    except:
+                        try:
+                            # 3. ActionChains 點擊
+                            action = ActionChains(self.driver)
+                            action.move_to_element(element).click().perform()
+                            return True
+                        except Exception as e:
+                            if attempt == retries - 1:  # 最後一次嘗試仍然失敗
+                                self.error_logger.log_error(f"點擊元素失敗 ({str(locator)})", e)
+                                return False
+                            # 短暫等待後重試
+                            time.sleep(1)
+            except Exception as e:
+                if attempt == retries - 1:  # 最後一次嘗試仍然失敗
+                    self.error_logger.log_error(f"找不到元素 ({str(locator)})", e)
+                    return False
+                # 短暫等待後重試
+                time.sleep(1)
+        
+        return False
+
+    def safe_send_keys(self, locator, text, wait_time=10, retries=3):
+        """
+        安全地向元素輸入文字，處理可能的 StaleElementReferenceException
+        
+        Args:
+            locator: 元素定位器，格式為 (定位方法, 定位值) 如 (By.ID, "myId")
+            text: 要輸入的文字
+            wait_time: 等待元素出現的秒數
+            retries: 重試次數
+        
+        Returns:
+            bool: 操作是否成功
+        """
+        for attempt in range(retries):
+            try:
+                # 每次重新找元素，避免 stale element
+                element = WebDriverWait(self.driver, wait_time).until(
+                    EC.visibility_of_element_located(locator)
+                )
+                
+                # 先清空欄位再輸入
+                try:
+                    element.clear()
+                    element.send_keys(text)
+                    return True
+                except Exception as e:
+                    if attempt == retries - 1:  # 最後一次嘗試仍然失敗
+                        self.error_logger.log_error(f"輸入文字至元素失敗 ({str(locator)})", e)
+                        return False
+                    # 短暫等待後重試
+                    time.sleep(1)
+            except Exception as e:
+                if attempt == retries - 1:  # 最後一次嘗試仍然失敗
+                    self.error_logger.log_error(f"找不到元素 ({str(locator)})", e)
+                    return False
+                # 短暫等待後重試
+                time.sleep(1)
+        
+        return False
+
+    def safe_get_text(self, locator, wait_time=10, retries=3, default=""):
+        """
+        安全地獲取元素文字，處理可能的 StaleElementReferenceException
+        
+        Args:
+            locator: 元素定位器，格式為 (定位方法, 定位值) 如 (By.ID, "myId")
+            wait_time: 等待元素出現的秒數
+            retries: 重試次數
+            default: 如果無法獲取文字時的預設值
+        
+        Returns:
+            str: 元素文字或預設值
+        """
+        for attempt in range(retries):
+            try:
+                # 每次重新找元素，避免 stale element
+                element = WebDriverWait(self.driver, wait_time).until(
+                    EC.visibility_of_element_located(locator)
+                )
+                
+                try:
+                    return element.text
+                except:
+                    try:
+                        # 嘗試使用 JavaScript 獲取文字
+                        return self.driver.execute_script("return arguments[0].textContent;", element)
+                    except Exception as e:
+                        if attempt == retries - 1:  # 最後一次嘗試仍然失敗
+                            self.error_logger.log_error(f"獲取元素文字失敗 ({str(locator)})", e)
+                            return default
+                        # 短暫等待後重試
+                        time.sleep(1)
+            except Exception as e:
+                if attempt == retries - 1:  # 最後一次嘗試仍然失敗
+                    self.error_logger.log_error(f"找不到元素 ({str(locator)})", e)
+                    return default
+                # 短暫等待後重試
+                time.sleep(1)
+        
+        return default
+
     def navigate_to_project_input_page(self, selected_year):
         """導航到計畫編號輸入頁面"""
         try:
             # 選擇學年
-            year_select = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.NAME, "swYear"))
-            )
-            year_select.click()
+            year_select_locator = (By.NAME, "swYear")
+            if not self.safe_click(year_select_locator):
+                raise Exception("無法點擊學年選擇下拉選單")
             
             # 選擇學年選項
-            year_option = self.driver.find_element(By.XPATH, f"//option[@value='{selected_year}']")
-            year_option.click()
+            year_option_locator = (By.XPATH, f"//option[@value='{selected_year}']")
+            if not self.safe_click(year_option_locator):
+                raise Exception("無法選擇指定學年")
             
             self.update_status(f"選擇學年: {selected_year}")
 
@@ -927,10 +1181,9 @@ class ItouchCrawler:
             )
 
             # 點擊經費申請明細帳(科目)
-            detail_btn = WebDriverWait(self.driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//td[contains(., '經費申請明細帳(科目)')]"))
-            )
-            detail_btn.click()
+            detail_btn_locator = (By.XPATH, "//td[contains(., '經費申請明細帳(科目)')]")
+            if not self.safe_click(detail_btn_locator):
+                raise Exception("無法點擊經費申請明細帳按鈕")
             
             # 等待新分頁開啟
             WebDriverWait(self.driver, 10).until(lambda d: len(d.window_handles) > 1)
@@ -954,26 +1207,45 @@ class ItouchCrawler:
     def input_and_submit_plan(self, plan_code):
         """在計畫編號頁面輸入並送出查詢"""
         try:
-            # 清空並填入第一個計畫編號欄位
-            input_from = self.driver.find_element(By.ID, "pjNoFrom")
-            input_from.clear()
-            input_from.send_keys(plan_code)
+            # 使用改進的安全元素操作
+            if not self.safe_send_keys((By.ID, "pjNoFrom"), plan_code):
+                raise Exception("無法輸入計畫編號到第一個欄位")
 
             # 找到第二個計畫編號欄位並點擊，觸發自動填入
-            input_to = self.driver.find_element(By.ID, "pjNoTo")
-            input_to.click()  # 點擊會觸發自動填入第一個欄位的值
+            if not self.safe_click((By.ID, "pjNoTo")):
+                raise Exception("無法點擊第二個計畫編號欄位")
 
             # 確保第二個欄位有正確填入值
-            WebDriverWait(self.driver, 3).until(
-                lambda d: input_to.get_attribute('value') == plan_code
-            )
+            for attempt in range(5):  # 重試5次
+                try:
+                    # 每次重新獲取元素
+                    input_to = self.driver.find_element(By.ID, "pjNoTo")
+                    # 檢查值是否已填入
+                    if input_to.get_attribute('value') == plan_code:
+                        break
+                    # 等待短暫時間後再次檢查
+                    time.sleep(0.5)
+                except:
+                    time.sleep(0.5)
+                    continue
+            else:
+                # 如果無法自動填入，嘗試手動輸入
+                if not self.safe_send_keys((By.ID, "pjNoTo"), plan_code):
+                    raise Exception("無法確認第二個計畫編號欄位已填入正確值")
             
             self.update_status(f"輸入計畫編號: {plan_code}")
 
             # 點擊送出按鈕
-            submit_btn = self.driver.find_element(By.NAME, "Submit")
-            submit_btn.click()
+            if not self.safe_click((By.NAME, "Submit")):
+                # 嘗試使用其他選擇器
+                if not self.safe_click((By.XPATH, "//input[@value='查詢']")):
+                    if not self.safe_click((By.XPATH, "//input[@type='submit']")):
+                        raise Exception("無法點擊送出按鈕")
+                        
             self.update_status("送出查詢")
+            
+            # 等待查詢處理
+            time.sleep(2)
 
         except Exception as e:
             self.error_logger.log_error(f"輸入計畫編號時發生錯誤 (計畫編號: {plan_code})", e)
